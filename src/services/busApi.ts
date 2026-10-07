@@ -28,6 +28,21 @@ export function saveApiConfig(config: ApiConfig) {
 }
 
 /**
+ * Check backend health & whether LTA_ACCOUNT_KEY is configured on server
+ */
+export async function checkApiHealth(): Promise<{ status: string; ltaApiConfigured: boolean }> {
+  try {
+    const res = await fetch('/api/health');
+    if (res.ok) {
+      return await res.json();
+    }
+  } catch {
+    // fallback
+  }
+  return { status: 'offline', ltaApiConfigured: false };
+}
+
+/**
  * Calculates arrival difference in minutes between now and EstimatedArrival ISO string
  */
 export function calculateMinutesLeft(estimatedArrivalIso?: string): number | null {
@@ -63,7 +78,7 @@ export function formatArrivalDisplay(minutes: number | null): { text: string; is
  */
 export function generateMockArrivals(busStopCode: string): BusArrivalResponse {
   const stop = POPULAR_BUS_STOPS.find((s) => s.BusStopCode === busStopCode);
-  const serviceNumbers = stop ? stop.Services : ['7', '14', '65', '106', '190'];
+  const serviceNumbers = stop && stop.Services.length > 0 ? stop.Services : ['7', '14', '65', '106', '190'];
 
   const now = Date.now();
 
@@ -123,38 +138,63 @@ export function generateMockArrivals(busStopCode: string): BusArrivalResponse {
 }
 
 /**
- * Fetch bus arrivals from LTA DataMall API or fallback to realistic mock generator
+ * Fetch bus arrivals from /api/bus-arrival (or LTA DataMall directly if custom proxy)
  */
 export async function fetchBusArrivals(
   busStopCode: string,
-  config: ApiConfig = getStoredApiConfig()
+  config: ApiConfig = getStoredApiConfig(),
+  serviceNo?: string
 ): Promise<BusArrivalResponse> {
-  if (config.mode === 'live' && config.apiKey) {
+  // 1. Try server-side API proxy (/api/bus-arrival) first
+  try {
+    let apiUrl = `/api/bus-arrival?BusStopCode=${encodeURIComponent(busStopCode)}`;
+    if (serviceNo) {
+      apiUrl += `&ServiceNo=${encodeURIComponent(serviceNo)}`;
+    }
+
+    const headers: Record<string, string> = {
+      accept: 'application/json',
+    };
+
+    if (config.apiKey) {
+      headers['x-account-key'] = config.apiKey.trim();
+    }
+
+    const res = await fetch(apiUrl, { headers });
+
+    if (res.ok) {
+      const data: BusArrivalResponse = await res.json();
+      if (data && data.Services && data.Services.length > 0) {
+        return data;
+      }
+    }
+  } catch {
+    // If backend proxy is not reachable, proceed to direct check or simulation
+  }
+
+  // 2. If client configured live mode with custom direct key / custom proxy
+  if (config.mode === 'live' && config.apiKey && config.customProxyUrl) {
     try {
-      // Use custom proxy if specified, or standard LTA endpoint with AccountKey
-      const endpoint = config.customProxyUrl
-        ? `${config.customProxyUrl.replace(/\/$/, '')}?BusStopCode=${busStopCode}`
-        : `https://datamall2.mytransport.sg/ltaodataservice/BusArrivalv2?BusStopCode=${busStopCode}`;
+      const endpoint = `${config.customProxyUrl.replace(/\/$/, '')}?BusStopCode=${encodeURIComponent(
+        busStopCode
+      )}${serviceNo ? `&ServiceNo=${encodeURIComponent(serviceNo)}` : ''}`;
 
       const response = await fetch(endpoint, {
         headers: {
-          AccountKey: config.apiKey,
+          AccountKey: config.apiKey.trim(),
           accept: 'application/json',
         },
       });
 
-      if (!response.ok) {
-        throw new Error(`LTA API error: ${response.status} ${response.statusText}`);
+      if (response.ok) {
+        const data: BusArrivalResponse = await response.json();
+        return data;
       }
-
-      const data: BusArrivalResponse = await response.json();
-      return data;
-    } catch (err) {
-      console.warn('Failed to fetch from live LTA API, falling back to dynamic simulated timings:', err);
-      return generateMockArrivals(busStopCode);
+    } catch {
+      // fallback
     }
   }
 
-  // Demo / Simulated mode
+  // 3. Fallback to dynamic real-time simulation
   return generateMockArrivals(busStopCode);
 }
