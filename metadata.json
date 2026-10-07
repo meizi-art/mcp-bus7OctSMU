@@ -1,0 +1,6 @@
+{
+  "name": "Glacier — Glassmorphic Workspace",
+  "description": "Ethereal dark glassmorphism suite featuring frozen light aesthetics, neural workspace, decentralized vault, and atmospheric soundscapes.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
